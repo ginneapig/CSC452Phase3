@@ -1,4 +1,7 @@
 /*
+ * Names: Annie Gao, Raymond Rea
+ * netid: anniegao, raymondprea
+ *
  * phase3a.c
  *
  */
@@ -14,6 +17,18 @@
 
 P3_VmStats  P3_vmStats;
 
+// TODO: use this? or can faults just be tracked with an id, have an int array
+typedef struct Fault {
+    int pid;    // process that's faulting
+    int page;   // page on which process is faulting
+    int frame;  // not sure if this remains unassigned initially, P3PageFaultResolve seems to assign this later
+} Fault;
+
+// queue of faults
+// locks to protect accessing queue of faults b/c shared b/t FaultHandler and Pager
+
+int SHUTDOWN = FALSE;
+
 static void
 FaultHandler(int type, void *arg)
 {
@@ -28,6 +43,10 @@ FaultHandler(int type, void *arg)
         terminate the process if necessary
 
     *********************/
+    int cause = USLOSS_MmuGetCause();
+    if (cause == USLOSS_MMU_ACCESS) { // if it's an access fault
+        // terminate process with P3_ACCESS_VIOLATION;
+    }
 
 }
 
@@ -50,12 +69,22 @@ Pager(void *arg)
        unblock faulting process
 
     *********************/
+    CheckMode();
+
+    while (!SHUTDOWN) {
+        while (0) { // while no requests
+            //Wait();
+        }
+        // update P3_vmStats->pages, ->frames, etc. if successful mapping
+    }
     return 0;
 }
 
 int
 P3_VmInit(int unused, int pages, int frames, int pagers)
 {
+    CheckMode();
+
     // zero P3_vmStats
     // initialize fault queue, lock, and condition variable
     // call P3FrameInit
@@ -69,13 +98,19 @@ P3_VmInit(int unused, int pages, int frames, int pagers)
 void
 P3_VmShutdown(void)
 {
+    CheckMode();
+    
     // cause pager to quit
     P3_PrintStats(&P3_vmStats);
+
+    SHUTDOWN = TRUE;
 }
 
 USLOSS_PTE *
 P3_AllocatePageTable(int pid)
 {
+    CheckMode();
+
     USLOSS_PTE  *table = NULL;
     // create a new page table here
     return table;
@@ -84,18 +119,24 @@ P3_AllocatePageTable(int pid)
 void
 P3_FreePageTable(int pid)
 {
+    CheckMode();
+
     // free the page table here
 }
 
 int
 P3PageTableGet(PID pid, USLOSS_PTE **table)
 {
+    CheckMode();
+    
     *table = NULL;
     return P1_SUCCESS;
 }
 
 int P3_Startup(void *arg)
 {
+    CheckMode();
+    
     int pid;
     int pid4;
     int status;
