@@ -1,7 +1,7 @@
 /*
  * Names: Annie Gao, Raymond Rea
  * netid: anniegao, raymondprea
- *
+  *
  * phase3a.c
  *
  */
