@@ -15,9 +15,6 @@
 
 #include "phase3Int.h"
 
-#define CHECKKERNEL() \
-    if ((USLOSS_PsrGet() & USLOSS_PSR_CURRENT_MODE) == 0) USLOSS_IllegalInstruction()
-
 #define LOCK(lid) { \
     int _rc = P1_Lock(lid); \
     assert(_rc == P1_SUCCESS); \
