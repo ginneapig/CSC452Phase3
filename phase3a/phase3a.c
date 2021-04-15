@@ -46,6 +46,9 @@ struct Fault {
     int pid;    // process that's faulting
     int page;   // page on which process is faulting
     int frame;  // not sure if this remains unassigned initially, P3PageFaultResolve seems to assign this later
+    int markedForTerm; // if the process causing the fault needs to be terminated 
+    int cause; // what caused the fault 
+
     Fault *next;
 };
 
@@ -72,9 +75,16 @@ int pagerQuit = FALSE;
 
 int STARTUP  = FALSE;
 int SHUTDOWN = FALSE;
+// more globals 
+int *vmRegion;
+int *pmAddr;
+int pageSize;
+int numPages;
+int numFrames;
+int mode;
 
-//TODO do i need an array of PTEs?
-USLOSS_PTE tables[P1_MAXPROC];
+//TODO make 2d array [proc][page num]
+USLOSS_PTE *tables;
 
 static void InitStub(USLOSS_Sysargs *sysargs);
 static void ShutdownStub(USLOSS_Sysargs *sysargs);
@@ -93,19 +103,19 @@ int enQFault(Fault *fault) {
     return 0;
 }
 
-int deQFault() {
+Fault * deQFault() {
     if (HEAD == NULL) {return;}
 
     Fault *removed = HEAD;
     HEAD = HEAD->next;
-    free(removed);
-    return 0;
+    return removed;
 }
 
 static void
 FaultHandler(int type, void *arg)
 {
     int rc;
+    int offset = (int) arg;
     /*******************
 
     if it's an access fault (USLOSS_MmuGetCause)
@@ -122,9 +132,12 @@ FaultHandler(int type, void *arg)
         P2_Terminate(P3_ACCESS_VIOLATION);
     } else {
         //TODO how do i get the rest of the info? 
-        Fault *newFault = malloc(sizeof(Fault));
-        newFault->pid  = P1_GetPid();
-        newFault->next = NULL;
+        Fault *newFault         = malloc(sizeof(Fault));
+        newFault->pid           = P1_GetPid();
+        newFault->cause         = cause;
+        newFault->page          = offset/pagesize; 
+        newFault->markedForTerm = FALSE;
+        newFault->next          = NULL;
 
         // add fault to queue
         LOCK(FAULTQ_LOCK);
@@ -173,11 +186,44 @@ Pager(void *arg)
 
     *********************/
     CheckMode();
+    int rc;  
+    int frame;
+    Fault *currFault;
 
     while (!SHUTDOWN) {
-        while (0) { // while no requests
-            //Wait();
+
+        LOCK(FAULTQ_LOCK);
+        // while no requests 
+        while (HEAD == NULL) { 
+            // wait for a fault 
+            WAIT(Q_NOT_EMPTY);
         }
+        currFault = deQFault();
+        UNLOCK(FAULTQ_LOCK);
+
+        // if calling process doesn't have page table 
+        if (tables[currFault->pid] == NULL) {
+            USLOSS_Abort("Faulting process does not have a page table\n");
+        }
+        rc = P3PageFaultResolve(currFault->pid, currFault->page, &frame); 
+        if (rc == P3_OUT_OF_SWAP) {
+            currFault->markedForTerm = TRUE;
+        } else {
+            USLOSS_PTE *currPTE = tables[currFault->pid][currFault->page];
+            if (rc == P3_NOT_IMPLEMENTED) {
+                currPTE->frame = currFault->page;
+            }
+            currPTE->incore = TRUE;
+            //update mmu
+            rc = USLOSS_MmuSetPageTable(currPTE);
+            assert(rc == USLOSS_MMU_OK); 
+
+        }
+        //TODO unblock faulting process 
+        LOCK(PAGER_LOCK);
+        rc = P1_Signal(FAULT_HANDLED);
+        assert(rc == P1_SUCCESS);
+        UNLOCK(PAGER_LOCK);
         // update P3_vmStats->pages, ->frames, etc. if successful mapping
     }
     return 0;
@@ -260,16 +306,25 @@ USLOSS_PTE *
 P3_AllocatePageTable(int pid)
 {
     CheckMode();
-
+    int i;
     // if P3_VmInit hasn't been called 
     if (!STARTUP) {return NULL;}
 
-    USLOSS_PTE  *table = NULL;
-    table = malloc(sizeof(USLOSS_PTE));
-   
+    USLOSS_PTE  *pte = NULL;
+    pte = malloc(sizeof(USLOSS_PTE));
+    pte->incore = FALSE;
+    pte->read   = TRUE;
+    pte->write  = TRUE;
+    pte->frame  = -1;  
+
     // setting the newly created PTE into the array 
     // of proccesses PTEs
-    tables[pid] = table;  
+    for(i=0; i<P1_MAXPROC; i++) {
+        if (tables[pid][i] == NULL) {
+            tables[pid][i] = pte;
+            break;
+        }
+    }
  
     return table;
 }
@@ -314,6 +369,8 @@ int P3_Startup(void *arg)
     int rc;
     int i;
 
+    tables = malloc(P1_MAXPROC * numPages * sizeof(USLOSS_PTE));
+
     rc = Sys_Spawn("P4_Startup", P4_Startup, NULL,  3 * USLOSS_MIN_STACK, 2, &pid4);
     assert(rc == 0);
     assert(pid4 >= 0);
@@ -342,14 +399,12 @@ int P3_Startup(void *arg)
 static void InitStub(USLOSS_Sysargs *sysargs) {
     int rc;
 
-    sysargs->arg4 = P3_VmInit(0, sysargs->arg2, sysargs->arg3, sysargs->arg4);
+    sysargs->arg4 = (void *) P3_VmInit(0, (int) sysargs->arg2, (int) sysargs->arg3, (int) sysargs->arg4);
 
-    void **junk0;
-    int  *junk1;
-    int  *junk2;
-    int  *junk3;
-    rc = USLOSS_MmuGetConfig(&sysargs->arg1, junk0, &((int*) sysargs->arg2), junk1, junk2, junk3);
+    rc = USLOSS_MmuGetConfig(&vmRegion, &pmAddr, &pageSize, &numPages, &numFrames, &mode);
     assert(rc == USLOSS_MMU_OK);    
+    sysargs->arg1 = (void *) *vmRegion;
+    sysargs->arg2 = (void *) pageSize;
 }
 
 static void ShutdownStub(USLOSS_Sysargs *sysargs) {
