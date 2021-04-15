@@ -190,10 +190,10 @@ P3_VmInit(int unused, int pages, int frames, int pagers)
     int rc;
     int pagerPid;
 
-    if (startup == TRUE) {return P3_ALREADY_INITIALIZED;}
-    if (pages < 0)  {return P3_INVALID_NUM_PAGES;}
-    if (frams < 0)  {return P3_INVALID_NUM_FRAMES;}
-    if (pagers < 0) {return P3_INVALID_NUM_PAGERS;}
+    if (startup == TRUE) { return P3_ALREADY_INITIALIZED; }
+    if (pages < 0)  { return P3_INVALID_NUM_PAGES; }
+    if (frams < 0)  { return P3_INVALID_NUM_FRAMES; }
+    if (pagers < 0 || pagers != P3_MAX_PAGERS) { return P3_INVALID_NUM_PAGERS; }
 
     // zero stats
     stats = malloc(sizeof(P3_VmInit));
