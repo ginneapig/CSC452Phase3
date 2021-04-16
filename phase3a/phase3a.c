@@ -30,9 +30,8 @@
     assert(_rc == P1_SUCCESS); \
 }
 
-//P3_VmStats P3_VmStats;
-
-P3_VmStats *stats;
+P3_VmStats P3_vmStats;
+P3_VmStats *stats = &P3_vmStats;
 
 // TODO: use this? or can faults just be tracked with an id, have an int array
 // TODO what other fields should go here?
@@ -207,7 +206,7 @@ Pager(void *arg)
         }
 
         rc = P3PageFaultResolve(currFault->pid, currFault->page, &frame); 
-        
+
         if (rc == P3_OUT_OF_SWAP) {
             currFault->markedForTerm = TRUE;
         } else {
@@ -255,9 +254,9 @@ P3_VmInit(int unused, int pages, int frames, int pagers)
     //assert(rc == P1_SUCCESS);
 
     // TODO: capitalize SYS_VMINIT?
-    rc = P2_SetSyscallHandler(Sys_VmInit, InitStub);
+    rc = P2_SetSyscallHandler(SYS_VMINIT, InitStub);
     assert(rc == P1_SUCCESS);
-    rc = P2_SetSyscallHandler(Sys_VmShutdown, ShutdownStub);
+    rc = P2_SetSyscallHandler(SYS_VMSHUTDOWN, ShutdownStub);
     assert(rc == P1_SUCCESS);
 
     // zero stats
@@ -329,7 +328,7 @@ USLOSS_PTE *
 P3_AllocatePageTable(int pid)
 {
     CheckMode();
-    int i;
+    //int i;
     // if P3_VmInit hasn't been called 
     if (!STARTUP) {return NULL;}
 
