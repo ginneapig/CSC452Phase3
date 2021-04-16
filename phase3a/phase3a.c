@@ -1,14 +1,14 @@
 /*
  * Names: Annie Gao, Raymond Rea
  * netid: anniegao, raymondprea
-  *
+ *
  * phase3a.c
  *
  */
 
 #include <assert.h>
 #include <phase1.h>
-#include <phase2.>
+#include <phase2.h>
 #include <usloss.h>
 #include <string.h>
 #include <libuser.h>
@@ -54,8 +54,9 @@ struct Fault {
 
 //locks
 int PAGER_LOCK;
-int FALUTQ_LOCK;
-int STATS_LOCK;
+int FAULTQ_LOCK;
+int STATS_LOCK; // TODO: what is this for
+int SHUTDOWN_LOCK;
 
 //condition variables 
 int Q_NOT_EMPTY;
@@ -81,7 +82,8 @@ int numFrames;
 int mode;
 
 //TODO make 2d array [proc][page num]
-USLOSS_PTE *tables;
+// index of a pte is the pid
+USLOSS_PTE *tables[P1_MAXPROC];
 
 static void InitStub(USLOSS_Sysargs *sysargs);
 static void ShutdownStub(USLOSS_Sysargs *sysargs);
@@ -89,7 +91,7 @@ static void ShutdownStub(USLOSS_Sysargs *sysargs);
 int enQFault(Fault *fault) {
     if (HEAD == NULL) {
         HEAD = fault;
-        return;
+        return 0;
     }
     
     Fault *curr = HEAD;
@@ -101,7 +103,7 @@ int enQFault(Fault *fault) {
 }
 
 Fault * deQFault() {
-    if (HEAD == NULL) {return;}
+    if (HEAD == NULL) {return NULL;}
 
     Fault *removed = HEAD;
     HEAD = HEAD->next;
@@ -132,7 +134,7 @@ FaultHandler(int type, void *arg)
         Fault *newFault         = malloc(sizeof(Fault));
         newFault->pid           = P1_GetPid();
         newFault->cause         = cause;
-        newFault->page          = offset/pagesize; 
+        newFault->page          = offset; //offset/pagesize; TODO: numPages or specific page entry
         newFault->markedForTerm = FALSE;
         newFault->next          = NULL;
 
@@ -151,7 +153,7 @@ FaultHandler(int type, void *arg)
         while(!PAGER_DONE) {
             WAIT(FAULT_HANDLED);
         }
-        PAGER_DONE = FALSE;
+        PAGER_DONE = TRUE;
         UNLOCK(PAGER_LOCK);
 
         // terminate the process if necessary
@@ -196,17 +198,20 @@ Pager(void *arg)
             WAIT(Q_NOT_EMPTY);
         }
         currFault = deQFault();
+        assert(currFault != NULL);
         UNLOCK(FAULTQ_LOCK);
 
         // if calling process doesn't have page table 
         if (tables[currFault->pid] == NULL) {
             USLOSS_Abort("Faulting process does not have a page table\n");
         }
+
         rc = P3PageFaultResolve(currFault->pid, currFault->page, &frame); 
+        
         if (rc == P3_OUT_OF_SWAP) {
             currFault->markedForTerm = TRUE;
         } else {
-            USLOSS_PTE *currPTE = tables[currFault->pid][currFault->page];
+            USLOSS_PTE *currPTE = tables[currFault->pid];//[currFault->page];
             if (rc == P3_NOT_IMPLEMENTED) {
                 currPTE->frame = currFault->page;
             }
@@ -223,6 +228,12 @@ Pager(void *arg)
         UNLOCK(PAGER_LOCK);
         // update P3_vmStats->pages, ->frames, etc. if successful mapping
     }
+
+    LOCK(PAGER_LOCK);   // shutdown holds shutdown lock
+    rc = P1_Signal(PAGER_QUIT);
+    assert(rc == P1_SUCCESS);
+    UNLOCK(PAGER_LOCK);
+
     return 0;
 }
 
@@ -233,13 +244,24 @@ P3_VmInit(int unused, int pages, int frames, int pagers)
     int rc;
     int pagerPid;
 
-    if (startup == TRUE) { return P3_ALREADY_INITIALIZED; }
-    if (pages < 0)  { return P3_INVALID_NUM_PAGES; }
-    if (frams < 0)  { return P3_INVALID_NUM_FRAMES; }
-    if (pagers < 0 || pagers != P3_MAX_PAGERS) { return P3_INVALID_NUM_PAGERS; }
+    if (STARTUP == TRUE) {return P3_ALREADY_INITIALIZED;}
+    if (pages < 0) {return P3_INVALID_NUM_PAGES;}
+    if (frames < 0) {return P3_INVALID_NUM_FRAMES;}
+    if (pagers != P3_MAX_PAGERS) {return P3_INVALID_NUM_PAGERS;}
+
+    // example to remove later:
+    // why is Sys_Spawn capitalized here but not in the spec and not in the testcases?
+    //rc = P2_SetSyscallHandler(SYS_SPAWN, SpawnStub);
+    //assert(rc == P1_SUCCESS);
+
+    // TODO: capitalize SYS_VMINIT?
+    rc = P2_SetSyscallHandler(Sys_VmInit, InitStub);
+    assert(rc == P1_SUCCESS);
+    rc = P2_SetSyscallHandler(Sys_VmShutdown, ShutdownStub);
+    assert(rc == P1_SUCCESS);
 
     // zero stats
-    stats = malloc(sizeof(P3_VmInit));
+    stats = malloc(sizeof(P3_VmStats));
     stats->pages      = 0;
     stats->frames     = 0;
     stats->blocks     = 0;
@@ -256,6 +278,7 @@ P3_VmInit(int unused, int pages, int frames, int pagers)
     rc = P1_LockCreate("fault q lock", &FAULTQ_LOCK);
     assert(rc == P1_SUCCESS);
     rc = P1_CondCreate("q not empty", FAULTQ_LOCK, &Q_NOT_EMPTY);
+    assert(rc == P1_SUCCESS);
 
     // call P3FrameInit, P3SwapInit
     rc = P3FrameInit(pages, frames);
@@ -264,15 +287,17 @@ P3_VmInit(int unused, int pages, int frames, int pagers)
     assert(rc == P1_SUCCESS);
 
     //numMaps is not used, passing in 0, to avoid null arg err
-    rc = USLOSS_MmuInit(0, pages, frames);
+    // extern int USLOSS_MmuInit(int numMaps, int numPages, int numFrames, int mode)
+    rc = USLOSS_MmuInit(0, pages, frames, mode);
     assert(rc == USLOSS_MMU_OK);
  
     STARTUP = TRUE;
 
     // fork pager                
-    rc = P1_Fork("pager", Pager, P3_MAX_PAGERS, USLOSS_MIN_STACK, &pagerPid);
+    rc = P1_Fork("pager", Pager, (void *) P3_MAX_PAGERS, USLOSS_MIN_STACK, P3_PAGER_PRIORITY, &pagerPid);
 
     USLOSS_IntVec[USLOSS_MMU_INT] = FaultHandler;
+
     return P1_SUCCESS;
 }
 
@@ -282,14 +307,15 @@ P3_VmShutdown(void)
     CheckMode();
     int rc;
     // do nothing if P3_VmInit hasn't been called
-    if (!startup) {return;}
+    if (!STARTUP) {return;}
 
     // waiting for the pager to finish
-    LOCK(PAGER_LOCK); 
+    //LOCK(PAGER_LOCK); 
+    LOCK(SHUTDOWN_LOCK);
     while(!pagerQuit) {
         WAIT(PAGER_QUIT);
     }    
-    UNLOCK(PAGER_LOCK);
+    UNLOCK(SHUTDOWN_LOCK);
 
     rc = USLOSS_MmuDone();
     assert(rc == USLOSS_MMU_OK);    
@@ -315,15 +341,20 @@ P3_AllocatePageTable(int pid)
     pte->frame  = -1;  
 
     // setting the newly created PTE into the array 
-    // of proccesses PTEs
-    for(i=0; i<P1_MAXPROC; i++) {
+    // of processes PTEs
+    /*for (i=0; i<P1_MAXPROC; i++) { // TODO: i<numPages? 
         if (tables[pid][i] == NULL) {
             tables[pid][i] = pte;
             break;
         }
+    }*/
+    if (tables[pid] == NULL) {  
+        tables[pid] = pte;
+    } else {
+        // page table exists for this pid
     }
  
-    return table;
+    return pte;
 }
 
 void
@@ -332,7 +363,7 @@ P3_FreePageTable(int pid)
     CheckMode();
     int rc;
     // do nothing if init hasn't been called
-    if (!STARTUP) {return;}
+    if (!STARTUP) { return; }
 
     rc = P3FrameFreeAll(pid);
     assert(rc == P1_SUCCESS);
@@ -341,21 +372,22 @@ P3_FreePageTable(int pid)
     assert(rc == P1_SUCCESS);
 
     // freeing this processes page table 
-    USLOSS_PTE *freed = tables[pid]
+    USLOSS_PTE *freed = tables[pid];
     free(freed);
     tables[pid] = NULL;
 }
 
 int
-P3PageTableGet(PID pid, USLOSS_PTE **table)
+P3PageTableGet(int pid, USLOSS_PTE **table)
 {
     CheckMode();
-    if (pid < 0 || pid >= P1_MAXPROC) {return P1_INVALID_PID;}
+    if (pid < 0 || pid >= P1_MAXPROC) { return P1_INVALID_PID; }
 
     *table = tables[pid];
     return P1_SUCCESS;
 }
 
+// User level process spawned by Phase 2.
 int P3_Startup(void *arg)
 {
     CheckMode();
@@ -366,21 +398,23 @@ int P3_Startup(void *arg)
     int rc;
     int i;
 
-    tables = malloc(P1_MAXPROC * numPages * sizeof(USLOSS_PTE));
+    //tables = malloc(P1_MAXPROC * numPages * sizeof(USLOSS_PTE)); // removing for later indexing purposes
 
-    rc = Sys_Spawn("P4_Startup", P4_Startup, NULL,  3 * USLOSS_MIN_STACK, 2, &pid4);
+    rc = Sys_Spawn("P4_Startup", P4_Startup, NULL,  4 * USLOSS_MIN_STACK, 2, &pid4);
     assert(rc == 0);
     assert(pid4 >= 0);
 
     // initializing array of page tables
-    for (i=0; i < P1_MAXPROC; i++){
+    for (i=0; i<P1_MAXPROC; i++){
         tables[i] = NULL;
     }    
 
     rc = P1_LockCreate("pager lock", &PAGER_LOCK);
     assert(rc == P1_SUCCESS);
-    rc = P1_LockCreate("fault lock", &FAULT_LOCK);
-    assert(rc == P1_SUCESS);
+    rc = P1_LockCreate("fault lock", &FAULTQ_LOCK);
+    assert(rc == P1_SUCCESS);
+    rc = P1_LockCreate("shutdown lock", &SHUTDOWN_LOCK);
+    assert(rc == P1_SUCCESS);
     rc = P1_CondCreate("fault handled", PAGER_LOCK, &FAULT_HANDLED);
     assert(rc == P1_SUCCESS);
     rc = P1_CondCreate("pager quit", PAGER_LOCK, &PAGER_QUIT);
@@ -393,14 +427,16 @@ int P3_Startup(void *arg)
     return 0;
 }
 
+// TODO: Phase2d has been modified with stubs for system calls Sys_VmInit and Sys_VmShutdown
+// how do these work with those?
 static void InitStub(USLOSS_Sysargs *sysargs) {
     int rc;
 
     sysargs->arg4 = (void *) P3_VmInit(0, (int) sysargs->arg2, (int) sysargs->arg3, (int) sysargs->arg4);
 
-    rc = USLOSS_MmuGetConfig(&vmRegion, &pmAddr, &pageSize, &numPages, &numFrames, &mode);
+    rc = USLOSS_MmuGetConfig((void *)&vmRegion, (void *)&pmAddr, &pageSize, &numPages, &numFrames, &mode);
     assert(rc == USLOSS_MMU_OK);    
-    sysargs->arg1 = (void *) *vmRegion;
+    sysargs->arg1 = (void **) vmRegion;
     sysargs->arg2 = (void *) pageSize;
 }
 
